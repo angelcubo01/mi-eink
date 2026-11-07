@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171916" />
+    <title>MiEInk</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="eyebrow"><span class="signal"></span> MiEInk · TRMNL 7,5&quot; · 800 × 480</div>
+        <h1>Escribe. Mira.<br />Déjalo en tinta.</h1>
+        <p>El texto se ajusta automáticamente al mayor tamaño posible antes de enviarlo a tu pantalla.</p>
+      </header>
+
+      <section class="workspace" aria-label="Editor de pantalla e-ink">
+        <div class="editor-card">
+          <div class="card-heading">
+            <div>
+              <span class="step">01</span>
+              <h2>Tu mensaje</h2>
+            </div>
+            <output id="counter" for="message">0 / 500</output>
+          </div>
+
+          <label class="sr-only" for="message">Texto que aparecerá en la pantalla</label>
+          <textarea
+            id="message"
+            maxlength="500"
+            rows="7"
+            placeholder="Escribe algo que merezca quedarse…"
+            autocomplete="off"
+            spellcheck="true"
+          ></textarea>
+
+          <div class="editor-meta">
+            <span id="font-size">— px</span>
+            <span>centrado automático</span>
+          </div>
+
+          <button id="send" type="button" disabled>
+            <span class="button-label">Actualizar pantalla</span>
+            <span class="button-arrow" aria-hidden="true">↗</span>
+          </button>
+
+          <div id="status" class="status" role="status" aria-live="polite">
+            <span class="status-dot"></span>
+            <span class="status-text">Preparado para escribir</span>
+          </div>
+        </div>
+
+        <div class="preview-column">
+          <div class="card-heading preview-heading">
+            <div>
+              <span class="step">02</span>
+              <h2>Vista previa</h2>
+            </div>
+            <span class="ink-label">1-BIT</span>
+          </div>
+
+          <div class="display-frame">
+            <div class="display-bezel">
+              <canvas id="preview" width="800" height="480" aria-label="Vista previa de la pantalla"></canvas>
+            </div>
+            <div class="display-foot">
+              <span>MIEINK</span>
+              <span>800 × 480</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <span id="connection-mode">Conectado localmente</span>
+        <span id="connection-target">192.168.4.1</span>
+      </footer>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "mi-eink",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "test": "node --test tests/*.test.mjs"
+  }
+}

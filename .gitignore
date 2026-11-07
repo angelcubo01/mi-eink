@@ -1,0 +1,7 @@
+.pio/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+compile_commands.json
+include/secrets.h
