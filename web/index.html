@@ -4,80 +4,187 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#171916" />
-    <title>MiEInk</title>
+    <title>MiEInk Studio</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <header class="hero">
-        <div class="eyebrow"><span class="signal"></span> MiEInk · TRMNL 7,5&quot; · 800 × 480</div>
-        <h1>Escribe. Mira.<br />Déjalo en tinta.</h1>
-        <p>El texto se ajusta automáticamente al mayor tamaño posible antes de enviarlo a tu pantalla.</p>
-      </header>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="MiEInk Studio">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span><strong>MiEInk</strong><small>Studio</small></span>
+      </a>
+      <div class="project-title">
+        <input id="project-name" value="Mi panel" aria-label="Nombre del proyecto" maxlength="80" />
+        <span id="save-state">Guardado</span>
+      </div>
+      <div class="top-actions">
+        <span class="simulation-badge" id="runtime-mode"><i></i> Detectando destino…</span>
+        <button class="icon-button" id="undo" type="button" title="Deshacer" aria-label="Deshacer"><span data-icon="undo"></span></button>
+        <button class="icon-button" id="redo" type="button" title="Rehacer" aria-label="Rehacer"><span data-icon="redo"></span></button>
+        <button class="secondary-button" id="import-project" type="button"><span data-icon="import"></span><span>Importar</span></button>
+        <button class="secondary-button" id="export-project" type="button"><span data-icon="export"></span><span>Exportar</span></button>
+        <button class="secondary-button" id="open-agenda" type="button"><span data-icon="agenda"></span><span>Agenda</span></button>
+        <button class="primary-button" id="open-device" type="button"><span data-icon="settings"></span><span>Dispositivo</span></button>
+        <input id="project-file" type="file" accept="application/json,.json" hidden />
+      </div>
+    </header>
 
-      <section class="workspace" aria-label="Editor de pantalla e-ink">
-        <div class="editor-card">
-          <div class="card-heading">
-            <div>
-              <span class="step">01</span>
-              <h2>Tu mensaje</h2>
-            </div>
-            <output id="counter" for="message">0 / 500</output>
+    <main class="studio">
+      <aside class="left-rail" aria-label="Páginas y herramientas">
+        <section class="rail-section pages-section">
+          <div class="section-heading">
+            <div><span>01</span><h2>Páginas</h2></div>
+            <button class="mini-button" id="add-page" type="button" title="Añadir página" aria-label="Añadir página"><span data-icon="add"></span></button>
           </div>
-
-          <label class="sr-only" for="message">Texto que aparecerá en la pantalla</label>
-          <textarea
-            id="message"
-            maxlength="500"
-            rows="7"
-            placeholder="Escribe algo que merezca quedarse…"
-            autocomplete="off"
-            spellcheck="true"
-          ></textarea>
-
-          <div class="editor-meta">
-            <span id="font-size">— px</span>
-            <span>centrado automático</span>
+          <div id="page-list" class="page-list"></div>
+          <div class="page-actions">
+            <button id="duplicate-page" type="button"><span data-icon="duplicate"></span><span>Duplicar</span></button>
+            <button id="delete-page" type="button"><span data-icon="delete"></span><span>Eliminar</span></button>
           </div>
+        </section>
 
-          <button id="send" type="button" disabled>
-            <span class="button-label">Actualizar pantalla</span>
-            <span class="button-arrow" aria-hidden="true">↗</span>
-          </button>
-
-          <div id="status" class="status" role="status" aria-live="polite">
-            <span class="status-dot"></span>
-            <span class="status-text">Preparado para escribir</span>
+        <section class="rail-section tools-section">
+          <div class="section-heading">
+            <div><span>02</span><h2>Herramientas</h2></div>
           </div>
+          <p class="section-help">Arrastra al lienzo o pulsa para añadir.</p>
+          <div class="tool-grid" id="tool-grid">
+            <button class="tool-card" draggable="true" data-widget-type="text"><b data-icon="text"></b><span>Texto</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="clock"><b data-icon="clock"></b><span>Reloj</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="weather"><b data-icon="weather"></b><span>Tiempo</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="calendar"><b data-icon="calendar"></b><span>Calendario</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="events"><b data-icon="events"></b><span>Eventos</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="device"><b data-icon="device"></b><span>Dispositivo</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="image"><b data-icon="image"></b><span>Imagen</span></button>
+            <button class="tool-card" draggable="true" data-widget-type="qr"><b data-icon="qr"></b><span>QR</span></button>
+          </div>
+        </section>
+      </aside>
+
+      <section class="canvas-column" aria-label="Editor de pantalla">
+        <div class="canvas-toolbar">
+          <div>
+            <span class="kicker">Pantalla activa</span>
+            <input id="page-name" maxlength="50" aria-label="Nombre de la página" />
+          </div>
+          <div class="view-switch" role="group" aria-label="Modo de vista">
+            <button type="button" class="active" data-view="design"><span data-icon="design"></span><span>Diseño</span></button>
+            <button type="button" data-view="preview"><span data-icon="preview"></span><span>Tinta 1-bit</span></button>
+          </div>
+          <button class="send-button" id="send-display" type="button"><span data-icon="send"></span><b id="send-label">Actualizar pantalla</b></button>
         </div>
 
-        <div class="preview-column">
-          <div class="card-heading preview-heading">
-            <div>
-              <span class="step">02</span>
-              <h2>Vista previa</h2>
+        <div class="canvas-stage" id="canvas-stage">
+          <div class="screen-shell">
+            <div id="design-surface" class="design-surface" tabindex="0" aria-label="Lienzo de diseño de 800 por 480 píxeles">
+              <div id="safe-area" class="safe-area" aria-hidden="true"></div>
+              <div id="widget-layer" class="widget-layer"></div>
+              <div id="drop-guide" class="drop-guide" hidden></div>
             </div>
-            <span class="ink-label">1-BIT</span>
+            <canvas id="preview" width="800" height="480" aria-label="Resultado monocromo" hidden></canvas>
           </div>
+          <div class="screen-meta"><span>MIEINK · 7,5”</span><span id="refresh-state">Refresco manual</span><span>800 × 480 · 1-BIT</span></div>
+        </div>
 
-          <div class="display-frame">
-            <div class="display-bezel">
-              <canvas id="preview" width="800" height="480" aria-label="Vista previa de la pantalla"></canvas>
-            </div>
-            <div class="display-foot">
-              <span>MIEINK</span>
-              <span>800 × 480</span>
-            </div>
+        <div class="hardware-strip">
+          <div><span class="kicker">Prueba los botones</span><strong id="runtime-status">Página activa</strong></div>
+          <div class="virtual-keys">
+            <button data-key="key1" type="button"><span>KEY1</span><small>Página anterior</small></button>
+            <button data-key="key2" type="button"><span>KEY2</span><small>Página siguiente</small></button>
+            <button data-key="key3" type="button"><span>KEY3</span><small>Refrescar</small></button>
           </div>
         </div>
       </section>
 
-      <footer>
-        <span id="connection-mode">Conectado localmente</span>
-        <span id="connection-target">192.168.4.1</span>
-      </footer>
+      <aside class="inspector" aria-label="Configuración">
+        <div class="inspector-heading">
+          <div><span>03</span><h2>Inspector</h2></div>
+          <div class="selection-actions">
+            <button id="duplicate-widget" type="button" title="Duplicar widget" aria-label="Duplicar widget"><span data-icon="duplicate"></span></button>
+            <button id="lock-widget" type="button" title="Bloquear widget" aria-label="Bloquear widget"><span data-icon="lock"></span></button>
+            <button id="delete-widget" type="button" title="Eliminar widget" aria-label="Eliminar widget"><span data-icon="delete"></span></button>
+          </div>
+        </div>
+        <div id="inspector-content" class="inspector-content"></div>
+      </aside>
     </main>
 
+    <dialog id="device-dialog">
+      <form method="dialog" class="device-panel" id="device-form">
+        <header>
+          <div><span class="kicker">Configuración pendiente de sincronizar</span><h2>Dispositivo MiEInk</h2></div>
+          <button class="dialog-close" type="button" aria-label="Cerrar"><span data-icon="close"></span></button>
+        </header>
+        <div class="device-grid">
+          <section>
+            <h3>Pantalla</h3>
+            <label>Resolución<input value="800 × 480 · monocromo" disabled /></label>
+            <label>Orientación<select name="rotation"><option value="0">0°</option><option value="180">180°</option></select></label>
+            <label>Margen seguro <output id="margin-output">0 px</output><input name="safeMargin" type="range" min="0" max="64" step="4" /></label>
+            <label>Umbral blanco/negro <output id="threshold-output">160</output><input name="threshold" type="range" min="64" max="224" /></label>
+            <label>Estrategia<select name="refreshMode"><option value="full">Refresco completo</option><option value="automatic">Automático</option></select></label>
+            <label>Refrescar pantalla cada <output id="refresh-minutes-output">Manual</output><input name="refreshMinutes" type="number" min="0" max="1440" step="1" value="0" /></label>
+            <p class="privacy-note">El tiempo se consulta como máximo una vez por hora, independientemente de este ajuste.</p>
+            <label class="check-row"><input name="invert" type="checkbox" /> Invertir pantalla</label>
+          </section>
+          <section>
+            <h3>Red · AP + hogar</h3>
+            <label>Red de configuración<input name="apSsid" maxlength="32" disabled /></label>
+            <label>Wi‑Fi de casa<select name="homeSsid" id="home-network-select"><option value="">Escanea para elegir una red</option></select></label>
+            <label id="custom-network-field" hidden>Nombre de red oculto<input name="homeSsidCustom" maxlength="32" autocomplete="off" /></label>
+            <button id="scan-networks" class="inspector-button" type="button"><span data-icon="wifi"></span><span>Buscar redes cercanas</span></button>
+            <p id="network-scan-status" class="privacy-note">El punto de acceso de configuración seguirá activo mientras el dispositivo usa Internet.</p>
+            <label>Contraseña de casa<input name="homePassword" type="password" maxlength="63" autocomplete="new-password" placeholder="Déjala vacía para conservarla" /></label>
+            <p class="privacy-note">La contraseña se guarda solo en la memoria NVS del ESP32; nunca se incluye en el proyecto, se exporta ni se devuelve desde la API.</p>
+          </section>
+          <section>
+            <h3>Botones físicos</h3>
+            <div id="button-settings"></div>
+          </section>
+          <section class="device-status-section">
+            <h3>Estado en directo</h3>
+            <p class="privacy-note">Simulación local · se actualiza cada 5 segundos mientras esta ventana está abierta.</p>
+            <div id="device-status-cards" class="device-status-cards" aria-live="polite"></div>
+          </section>
+        </div>
+        <footer>
+          <span><i></i> Modo simulación: no se modificará ningún chip</span>
+          <button class="primary-button" id="save-device" value="default">Guardar configuración</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="agenda-dialog">
+      <form method="dialog" class="agenda-panel" id="agenda-form">
+        <header>
+          <div><span class="kicker">Datos compartidos del proyecto</span><h2>Agenda y festivos</h2></div>
+          <button class="agenda-close" type="button" aria-label="Cerrar"><span data-icon="close"></span></button>
+        </header>
+        <div class="agenda-grid">
+          <section>
+            <div class="section-heading"><h3>Eventos</h3><button id="add-agenda-event" class="mini-button" type="button" title="Añadir evento" aria-label="Añadir evento"><span data-icon="add"></span></button></div>
+            <div id="agenda-event-list"></div>
+          </section>
+          <section>
+            <div class="section-heading"><h3>Festivos manuales</h3><button id="add-holiday" class="mini-button" type="button" title="Añadir festivo" aria-label="Añadir festivo"><span data-icon="add"></span></button></div>
+            <div id="agenda-holiday-list"></div>
+          </section>
+          <section>
+            <h3>Festivos de España</h3>
+            <label class="check-row"><input id="spain-holidays-enabled" type="checkbox" /> Consultar festivos automáticos</label>
+            <label>Comunidad autónoma<select id="spain-holiday-region">
+              <option value="">Solo nacionales</option><option value="ES-AN">Andalucía</option><option value="ES-AR">Aragón</option><option value="ES-AS">Asturias</option><option value="ES-IB">Illes Balears</option><option value="ES-CN">Canarias</option><option value="ES-CB">Cantabria</option><option value="ES-CL">Castilla y León</option><option value="ES-CM">Castilla-La Mancha</option><option value="ES-CT">Cataluña</option><option value="ES-EX">Extremadura</option><option value="ES-GA">Galicia</option><option value="ES-MD">Madrid</option><option value="ES-MC">Murcia</option><option value="ES-NC">Navarra</option><option value="ES-PV">País Vasco</option><option value="ES-RI">La Rioja</option><option value="ES-VC">Comunitat Valenciana</option>
+            </select></label>
+            <button id="refresh-holidays" class="inspector-button" type="button">Actualizar festivos de este año</button>
+            <p id="holiday-status" class="privacy-note">Los municipales se añaden como festivos manuales.</p>
+          </section>
+        </div>
+        <footer><span>Los cambios se guardan automáticamente en el proyecto.</span><button class="primary-button" value="default">Cerrar</button></footer>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/vendor/qrcode.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

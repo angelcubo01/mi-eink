@@ -13,6 +13,10 @@ ASSETS = (
     ("INDEX_HTML", ROOT / "web" / "index.html"),
     ("STYLES_CSS", ROOT / "web" / "styles.css"),
     ("APP_JS", ROOT / "web" / "app.js"),
+    ("MODEL_JS", ROOT / "web" / "model.js"),
+    ("RENDER_JS", ROOT / "web" / "render.js"),
+    ("MATERIAL_ICONS_JS", ROOT / "web" / "material-icons.js"),
+    ("QRCODE_JS", ROOT / "node_modules" / "qrcode-generator" / "qrcode.js"),
 )
 
 

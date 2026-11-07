@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
+import { MATERIAL_ICONS } from '../web/material-icons.js';
 
 import {
   BMP_SIZE,
@@ -9,6 +11,7 @@ import {
   calculateLayout,
   canvasToMonoBmp,
   wrapText,
+  viewVisibility,
 } from '../web/app.js';
 
 class MeasuringContext {
@@ -119,4 +122,41 @@ test('escribe las filas de abajo arriba y los bits de izquierda a derecha', () =
   const topRowFirstByte = bmp[62 + (DISPLAY_HEIGHT - 1) * rowBytes];
   assert.equal(bottomRowFirstByte, 0xff);
   assert.equal(topRowFirstByte, 0x7f);
+});
+
+test('el firmware interpreta los bits blancos del BMP sin invertir la pantalla física', async () => {
+  const firmware = await readFile(new URL('../src/main.cpp', import.meta.url), 'utf8');
+  assert.match(firmware, /loadBMP\(bmp,\s*0,\s*0,\s*BBEP_WHITE,\s*BBEP_BLACK\)/);
+  assert.doesNotMatch(firmware, /loadBMP\(bmp,\s*0,\s*0,\s*BBEP_BLACK,\s*BBEP_WHITE\)/);
+});
+
+test('los refrescos automáticos solicitan actualización parcial al firmware', async () => {
+  const [app, firmware] = await Promise.all([
+    readFile(new URL('../web/app.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/main.cpp', import.meta.url), 'utf8'),
+  ]);
+  assert.match(app, /'X-Refresh-Mode': automatic \? 'partial'/);
+  assert.match(firmware, /REFRESH_PARTIAL/);
+  assert.match(firmware, /DISPLAY_FILE\[\] = "\/display\.bmp"/);
+});
+
+test('las vistas de diseño y tinta son mutuamente excluyentes', async () => {
+  assert.deepEqual(viewVisibility('design'), { design: true, preview: false });
+  assert.deepEqual(viewVisibility('preview'), { design: false, preview: true });
+  const styles = await readFile(new URL('../web/styles.css', import.meta.url), 'utf8');
+  assert.match(styles, /\[hidden\]\s*\{\s*display:\s*none !important;/);
+});
+
+test('la interfaz usa Material Symbols locales y tiene un layout móvil real', async () => {
+  const [html, styles] = await Promise.all([
+    readFile(new URL('../web/index.html', import.meta.url), 'utf8'),
+    readFile(new URL('../web/styles.css', import.meta.url), 'utf8'),
+  ]);
+  assert.match(html, /data-icon="weather"/);
+  assert.match(html, /data-icon="settings"/);
+  assert.doesNotMatch(html, /[↶↷↗⧉⌁☷▧▦]/);
+  assert.ok(Object.keys(MATERIAL_ICONS).length >= 50);
+  assert.match(styles, /@media \(max-width: 640px\)/);
+  assert.match(styles, /body \{ min-width: 0;/);
+  assert.match(styles, /min-height: 44px/);
 });

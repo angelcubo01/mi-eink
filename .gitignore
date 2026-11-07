@@ -5,3 +5,7 @@ __pycache__/
 node_modules/
 compile_commands.json
 include/secrets.h
+.data/
+.env
+.env.*
+!.env.example
