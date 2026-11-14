@@ -8,6 +8,7 @@ import {
   createDefaultProject,
   createWidget,
   deletePage,
+  dynamicScheduleForPage,
   sanitizeProject,
 } from '../web/model.js';
 
@@ -73,16 +74,16 @@ test('descarta widgets solapados al importar un proyecto', () => {
   assert.equal(sanitizeProject(project).pages[0].widgets.length, 1);
 });
 
-test('migra proyectos 16x10 al grid 20x12 y separa el intervalo de refresco', () => {
+test('migra proyectos 16x10 al grid 20x12 y sustituye el intervalo por planificación inteligente', () => {
   const legacy = createDefaultProject();
   legacy.schemaVersion = 1;
   legacy.pages[0].widgets = [{ id: 'legacy', type: 'text', x: 8, y: 5, w: 4, h: 2, config: { text: 'Hola' } }];
   legacy.device.display = { width: 800, height: 480, refresh: 'automatic', refreshMinutes: 17 };
   const migrated = sanitizeProject(legacy);
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.deepEqual(migrated.pages[0].widgets[0] && { x: migrated.pages[0].widgets[0].x, y: migrated.pages[0].widgets[0].y, w: migrated.pages[0].widgets[0].w, h: migrated.pages[0].widgets[0].h }, { x: 10, y: 6, w: 5, h: 2 });
-  assert.equal(migrated.device.display.refreshMode, 'automatic');
-  assert.equal(migrated.device.display.refreshMinutes, 17);
+  assert.equal(migrated.device.display.refreshMode, 'full');
+  assert.equal('refreshMinutes' in migrated.device.display, false);
   assert.equal('refresh' in migrated.device.display, false);
 });
 
@@ -108,7 +109,7 @@ test('actualiza los widgets visuales a iconos sin etiquetas por defecto', () => 
     { id: 'estado', type: 'device', x: 3, y: 0, w: 2, h: 2, config: { showLabels: true, showNetworkName: true } },
   ];
   const migrated = sanitizeProject(legacy);
-  assert.equal(migrated.schemaVersion, 6);
+  assert.equal(migrated.schemaVersion, 7);
   assert.equal(migrated.pages[0].widgets[0].config.showLocation, false);
   assert.equal(migrated.pages[0].widgets[1].config.showLabels, false);
   assert.equal(migrated.pages[0].widgets[1].config.showNetworkName, true);
@@ -128,7 +129,29 @@ test('conserva en el proyecto la caché validada de festivos españoles', () => 
     },
   };
   const clean = sanitizeProject(project);
-  assert.equal(clean.schemaVersion, 6);
+  assert.equal(clean.schemaVersion, 7);
   assert.equal(clean.agenda.holidays.spain.cached.holidays.length, 1);
   assert.equal(clean.agenda.holidays.spain.cached.region, 'ES-CT');
+});
+
+test('planifica hora al minuto, tiempo a la hora y fecha/calendario a medianoche', () => {
+  const now = new Date(2026, 10, 8, 10, 23, 45, 500);
+  const page = { widgets: [{ type: 'clock', config: { showTime: true, showDate: true } }] };
+  let schedule = dynamicScheduleForPage(page, now);
+  assert.deepEqual([schedule.at.getHours(), schedule.at.getMinutes(), schedule.at.getSeconds()], [10, 24, 0]);
+  assert.deepEqual(schedule.reasons, ['hora']);
+
+  page.widgets = [{ type: 'clock', config: { showTime: false, showDate: true, showWeekday: false } }];
+  schedule = dynamicScheduleForPage(page, now);
+  assert.deepEqual([schedule.at.getHours(), schedule.at.getMinutes()], [0, 0]);
+  assert.equal(schedule.at.getDate(), 9);
+
+  page.widgets = [{ type: 'weather', config: {} }, { type: 'calendar', config: {} }];
+  schedule = dynamicScheduleForPage(page, now);
+  assert.deepEqual([schedule.at.getHours(), schedule.at.getMinutes()], [11, 0]);
+  assert.deepEqual(schedule.reasons, ['tiempo']);
+});
+
+test('un reloj sin hora, fecha ni día no programa refrescos', () => {
+  assert.equal(dynamicScheduleForPage({ widgets: [{ type: 'clock', config: { showTime: false, showDate: false, showWeekday: false } }] }), null);
 });

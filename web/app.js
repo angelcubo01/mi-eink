@@ -11,14 +11,15 @@ import {
   createWidget,
   deepClone,
   deletePage,
+  dynamicScheduleForPage,
   findFreePosition,
   movePage,
   sanitizeProject,
 } from './model.js';
-import { BMP_SIZE, MARGINS, calculateLayout, canvasToMonoBmp, renderPage, wrapText } from './render.js';
+import { BMP_SIZE, MARGINS, calculateLayout, canvasToMonoBmp, canvasToOneBitBmp, ditherImageData, renderPage, wrapText } from './render.js';
 import { hydrateMaterialIcons, iconMarkup } from './material-icons.js';
 
-export { BMP_SIZE, MARGINS, DISPLAY_HEIGHT, DISPLAY_WIDTH, calculateLayout, canvasToMonoBmp, wrapText };
+export { BMP_SIZE, MARGINS, DISPLAY_HEIGHT, DISPLAY_WIDTH, calculateLayout, canvasToMonoBmp, canvasToOneBitBmp, wrapText };
 
 const TYPE_LABELS = Object.freeze({ text: 'Texto', clock: 'Reloj', weather: 'Tiempo', calendar: 'Calendario', events: 'Eventos', device: 'Dispositivo', image: 'Imagen', qr: 'Código QR' });
 const ACTION_LABELS = Object.freeze({ previous_page: 'Página anterior', next_page: 'Página siguiente', show_page: 'Mostrar una página', refresh: 'Refrescar', toggle_invert: 'Invertir', blank: 'Dejar en blanco', none: 'Sin acción' });
@@ -38,9 +39,7 @@ let savePromise = null;
 let renderToken = 0;
 let runtime = { blank: false, inverted: false };
 let displayJobActive = false;
-let autoRefreshTimer = null;
-let autoRefreshDeadline = 0;
-let autoRefreshLastResult = '';
+let previewRefreshTimer = null;
 let deviceTelemetry = null;
 let deviceStatusTimer = null;
 let spanishHolidays = [];
@@ -76,23 +75,123 @@ async function jsonResponse(response) {
   return body;
 }
 
+async function sha256Hex(bytes) {
+  if (globalThis.crypto?.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+  }
+  // El portal del dispositivo se sirve por HTTP y algunos navegadores ocultan
+  // SubtleCrypto fuera de un contexto seguro. Este fallback mantiene el hash
+  // por contenido también al configurar directamente desde 192.168.4.1.
+  const constants = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+  ];
+  const length = bytes.length;
+  const paddedLength = Math.ceil((length + 9) / 64) * 64;
+  const padded = new Uint8Array(paddedLength);
+  padded.set(bytes); padded[length] = 0x80;
+  const bitLength = length * 8;
+  const view = new DataView(padded.buffer);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000), false);
+  view.setUint32(paddedLength - 4, bitLength >>> 0, false);
+  const hash = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const words = new Uint32Array(64);
+  const rotate = (value, amount) => (value >>> amount) | (value << (32 - amount));
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4, false);
+    for (let index = 16; index < 64; index += 1) {
+      const s0 = rotate(words[index - 15], 7) ^ rotate(words[index - 15], 18) ^ (words[index - 15] >>> 3);
+      const s1 = rotate(words[index - 2], 17) ^ rotate(words[index - 2], 19) ^ (words[index - 2] >>> 10);
+      words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+    }
+    let [a,b,c,d,e,f,g,h] = hash;
+    for (let index = 0; index < 64; index += 1) {
+      const sum1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+      const choice = (e & f) ^ (~e & g);
+      const t1 = (h + sum1 + choice + constants[index] + words[index]) >>> 0;
+      const sum0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (sum0 + majority) >>> 0;
+      h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t2)>>>0;
+    }
+    [a,b,c,d,e,f,g,h].forEach((value, index) => { hash[index] = (hash[index] + value) >>> 0; });
+  }
+  return Array.from(hash, (value) => value.toString(16).padStart(8, '0')).join('');
+}
+
+function crc32Hex(bytes) {
+  let crc = 0xffffffff;
+  for (const value of bytes) {
+    crc ^= value;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
+}
+
+async function syncPageFrames() {
+  const agenda = { ...project.agenda, holidays: [...project.agenda.holidays.manual, ...spanishHolidays] };
+  for (const page of project.pages) {
+    const canvas = document.createElement('canvas');
+    canvas.width = DISPLAY_WIDTH;
+    canvas.height = DISPLAY_HEIGHT;
+    await renderPage(canvas, project, page, {
+      agenda,
+      telemetry: deviceTelemetry,
+      assetResolver: assetUrl,
+      staticOnly: true,
+      deferDisplayTransform: true,
+    });
+    const frame = canvasToMonoBmp(canvas, project.device.display.threshold);
+    const frameId = await sha256Hex(frame);
+    const response = await fetch(`/api/frames/${frameId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/bmp' },
+      body: frame,
+    });
+    if (!response.ok) await jsonResponse(response);
+    page.frameId = frameId;
+  }
+}
+
 async function loadProject() {
   let persistBrowserCopy = false;
+  let rawProject = null;
   try {
     const response = await fetch('/api/project', { cache: 'no-store' });
     if (!response.ok) {
       persistBrowserCopy = response.status === 404;
       throw new Error(`Error HTTP ${response.status}`);
     }
-    project = sanitizeProject(await response.json());
+    rawProject = await response.json();
+    project = sanitizeProject(rawProject);
   } catch {
-    try { project = sanitizeProject(JSON.parse(localStorage.getItem('mieink-project') || 'null')); }
+    try { rawProject = JSON.parse(localStorage.getItem('mieink-project') || 'null'); project = sanitizeProject(rawProject); }
     catch { project = createDefaultProject(); }
+  }
+  let migratedAssets = false;
+  for (const [legacyId, legacy] of Object.entries(rawProject?.assets || {})) {
+    if (!legacy?.data?.startsWith('data:image/')) continue;
+    try {
+      const response = await fetch(legacy.data);
+      const uploaded = await uploadAsset(new File([await response.blob()], legacy.name || 'imagen', { type: legacy.mime || response.headers.get('content-type') || 'image/jpeg' }));
+      project.assets[uploaded.id] = uploaded;
+      for (const page of project.pages) for (const widget of page.widgets) {
+        if (widget.type === 'image' && widget.config.assetId === legacyId) widget.config.assetId = uploaded.id;
+      }
+      migratedAssets = true;
+    } catch { /* La configuración restante sigue siendo recuperable. */ }
   }
   const cached = project.agenda.holidays.spain.cached;
   const year = new Date().getFullYear();
   if (cached?.year === year && cached.region === project.agenda.holidays.spain.region) spanishHolidays = [...cached.holidays];
-  if (persistBrowserCopy) queueMicrotask(queueSave);
+  if (persistBrowserCopy || migratedAssets) queueMicrotask(queueSave);
 }
 
 function mirrorProjectInBrowser() {
@@ -109,11 +208,12 @@ async function persistProjectNow({ retries = 2 } = {}) {
     if (savedRevision >= saveRevision) return true;
   }
   const targetRevision = saveRevision;
-  const payload = JSON.stringify(project);
   savePromise = (async () => {
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
+        await syncPageFrames();
+        const payload = JSON.stringify(project);
         await jsonResponse(await fetch('/api/project', {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: payload,
         }));
@@ -388,7 +488,7 @@ function renderDeviceStatus() {
   target.innerHTML = [
     statusCard('battery', 'Energía', power.percentage == null ? 'No disponible' : `${power.percentage}%${power.charging ? ' · cargando' : ''}`, power.voltage == null ? '' : `${power.voltage.toFixed(2)} V`),
     statusCard('wifi', 'Red', network.ssid || 'Sin red', `${network.ip || '—'} · ${network.rssi ?? '—'} dBm`),
-    statusCard('screen', 'Pantalla', display.state || '—', `${display.refreshCount || 0} refrescos · ${display.refreshMinutes || 0} min`),
+    statusCard('screen', 'Pantalla', display.state || '—', `${display.refreshCount || 0} refrescos · ${display.nextRefreshReason || 'sin vencimiento'}`),
     statusCard('chip', 'Sistema', system.firmware || '—', `${system.uptimeLabel || '—'}${system.temperatureC == null ? '' : ` · ${Math.round(system.temperatureC)} °C`}`),
   ].join('');
 }
@@ -478,10 +578,6 @@ async function refreshSpainHolidays({ force = false } = {}) {
   }
 }
 
-function refreshMinutes() {
-  return Math.max(0, Math.min(1440, Number(project.device.display.refreshMinutes || 0)));
-}
-
 function activePageNeedsLiveRefresh() {
   return activePage().widgets.some((widget) => LIVE_WIDGET_TYPES.has(widget.type));
 }
@@ -502,45 +598,31 @@ function refreshVisibleLiveWidgets() {
 
 function updateRefreshIndicator() {
   const element = $('#refresh-state');
-  const minutes = refreshMinutes();
-  if (!minutes) {
-    element.textContent = 'Refresco manual';
+  const schedule = dynamicScheduleForPage(activePage());
+  if (!schedule) {
+    element.textContent = 'Sin refrescos dinámicos';
     return;
   }
-  if (!activePageNeedsLiveRefresh()) {
-    element.textContent = 'Auto web · sin widgets de fecha/hora';
-    return;
-  }
-  const remaining = Math.max(0, Math.ceil((autoRefreshDeadline - Date.now()) / 60000));
-  const suffix = autoRefreshLastResult ? ` · ${autoRefreshLastResult}` : '';
-  element.textContent = autoRefreshDeadline ? `Auto web · ${remaining || minutes} min${suffix}` : `Auto web · cada ${minutes} min${suffix}`;
+  const controllerAt = deviceTelemetry?.display?.nextRefreshAt;
+  const when = controllerAt ? new Date(controllerAt) : schedule.at;
+  const reasons = deviceTelemetry?.display?.nextRefreshReason || schedule.reasons.join(', ');
+  element.textContent = `Controlador · ${reasons} · ${new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(when)}`;
 }
 
 function scheduleAutoRefresh() {
-  clearTimeout(autoRefreshTimer);
-  const minutes = refreshMinutes();
-  autoRefreshDeadline = 0;
-  autoRefreshLastResult = '';
-  if (!minutes || !activePageNeedsLiveRefresh()) {
+  clearTimeout(previewRefreshTimer);
+  const schedule = dynamicScheduleForPage(activePage());
+  if (!schedule) {
     updateRefreshIndicator();
     return;
   }
-  autoRefreshDeadline = Date.now() + minutes * 60_000;
-  const tick = async () => {
-    const remaining = autoRefreshDeadline - Date.now();
-    if (remaining > 0) {
-      updateRefreshIndicator();
-      autoRefreshTimer = setTimeout(tick, Math.min(30_000, remaining));
-      return;
-    }
-    const sent = await sendDisplay({ automatic: true });
-    autoRefreshLastResult = sent ? 'actualizado' : 'reintento';
-    autoRefreshDeadline = Date.now() + refreshMinutes() * 60_000;
+  const tick = () => {
+    refreshVisibleLiveWidgets();
     updateRefreshIndicator();
-    autoRefreshTimer = setTimeout(tick, Math.min(30_000, refreshMinutes() * 60_000));
+    scheduleAutoRefresh();
   };
   updateRefreshIndicator();
-  autoRefreshTimer = setTimeout(tick, Math.min(30_000, minutes * 60_000));
+  previewRefreshTimer = setTimeout(tick, Math.max(250, schedule.at.getTime() - Date.now() + 100));
 }
 
 function addWidget(type, position = null) {
@@ -674,17 +756,6 @@ async function refreshStaleWeather() {
 async function uploadAsset(file) {
   if (!file || !file.type.startsWith('image/')) throw new Error('Selecciona una imagen válida.');
   if (file.size > 12 * 1024 * 1024) throw new Error('La imagen no puede superar 12 MB.');
-  try {
-    return await jsonResponse(await fetch('/api/assets', { method: 'POST', headers: { 'Content-Type': file.type, 'X-File-Name': encodeURIComponent(file.name) }, body: file }));
-  } catch {
-    // El firmware de la primera prueba no tiene sistema de archivos. Reducimos
-    // la foto y la guardamos en el proyecto del navegador para que funcione
-    // también desde móvil, sin depender de una API de subida.
-    return createBrowserAsset(file);
-  }
-}
-
-async function createBrowserAsset(file) {
   const objectUrl = URL.createObjectURL(file);
   try {
     const image = await new Promise((resolve, reject) => {
@@ -693,24 +764,38 @@ async function createBrowserAsset(file) {
       element.onerror = () => reject(new Error('No se pudo leer esa imagen.'));
       element.src = objectUrl;
     });
-    let longestEdge = Math.min(1280, Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
-    let data = '';
-    while (longestEdge >= 360) {
-      const scale = longestEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height);
-      const width = Math.max(1, Math.round((image.naturalWidth || image.width) * Math.min(1, scale)));
-      const height = Math.max(1, Math.round((image.naturalHeight || image.height) * Math.min(1, scale)));
-      const canvas = document.createElement('canvas');
-      canvas.width = width; canvas.height = height;
-      const context = canvas.getContext('2d');
-      context.fillStyle = '#fff'; context.fillRect(0, 0, width, height);
-      context.drawImage(image, 0, 0, width, height);
-      data = canvas.toDataURL('image/jpeg', longestEdge > 700 ? .78 : .70);
-      if (data.length <= 430 * 1024) break;
-      longestEdge = Math.floor(longestEdge * .72);
-    }
-    if (!data) throw new Error('No se pudo preparar la imagen.');
-    const id = `browser-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
-    return { id, name: String(file.name || 'imagen').slice(0, 120), mime: 'image/jpeg', size: Math.round(data.length * .75), data, url: data, local: true };
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    const scale = Math.min(1, DISPLAY_WIDTH / sourceWidth, DISPLAY_HEIGHT / sourceHeight);
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.fillStyle = '#fff'; context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    const imageData = context.getImageData(0, 0, width, height);
+    ditherImageData(imageData.data, width, height, { dither: 'floyd', threshold: project.device.display.threshold });
+    context.putImageData(imageData, 0, 0);
+    const bmp = canvasToOneBitBmp(canvas, project.device.display.threshold);
+    const id = await sha256Hex(bmp);
+    const asset = await jsonResponse(await fetch(`/api/assets/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/bmp', 'X-File-Name': encodeURIComponent(file.name) },
+      body: bmp,
+    }));
+    return {
+      ...asset,
+      id,
+      name: String(file.name || 'imagen').slice(0, 120),
+      mime: 'image/bmp',
+      format: 'mono1',
+      width,
+      height,
+      size: bmp.byteLength,
+      crc32: crc32Hex(bmp),
+      url: `/api/assets/${id}`,
+    };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -854,8 +939,6 @@ async function openDeviceDialog() {
   form.elements.rotation.value = display.rotation;
   form.elements.safeMargin.value = display.safeMargin;
   form.elements.threshold.value = display.threshold;
-  form.elements.refreshMode.value = display.refreshMode;
-  form.elements.refreshMinutes.value = display.refreshMinutes;
   form.elements.invert.checked = display.invert;
   form.elements.apSsid.value = project.device.network.apSsid;
   renderNetworkOptions([], project.device.network.homeSsid);
@@ -864,7 +947,6 @@ async function openDeviceDialog() {
   form.elements.homePassword.value = '';
   $('#margin-output').textContent = `${display.safeMargin} px`;
   $('#threshold-output').textContent = display.threshold;
-  $('#refresh-minutes-output').textContent = display.refreshMinutes ? `${display.refreshMinutes} min` : 'Manual';
   $('#button-settings').innerHTML = ['key1', 'key2', 'key3'].map((key) => {
     const setting = project.device.buttons[key];
     return `<div class="button-setting"><strong>${key.toUpperCase()}</strong><select name="${key}Action">${deviceSelectOptions(setting.action)}</select><select class="button-target" name="${key}Page" ${setting.action === 'show_page' ? '' : 'hidden'}>${project.pages.map((page) => `<option value="${escapeHtml(page.id)}" ${setting.pageId === page.id ? 'selected' : ''}>${escapeHtml(page.name)}</option>`).join('')}</select></div>`;
@@ -899,8 +981,7 @@ async function saveDevice(event) {
       rotation: Number(data.get('rotation')),
       safeMargin: Number(data.get('safeMargin')),
       threshold: Number(data.get('threshold')),
-      refreshMode: data.get('refreshMode'),
-      refreshMinutes: Math.max(0, Math.min(1440, Number(data.get('refreshMinutes') || 0))),
+      refreshMode: 'full',
       invert: form.elements.invert.checked,
     });
     Object.assign(draft.device.network, { mode: 'ap_sta', apSsid: form.elements.apSsid.value, homeSsid });
@@ -941,33 +1022,45 @@ async function waitForDisplayJob(job) {
   throw new Error('La simulación tardó demasiado en terminar.');
 }
 
-async function sendDisplay({ automatic = false } = {}) {
+async function sendDisplay() {
   if (displayJobActive) return false;
   const button = $('#send-display');
   displayJobActive = true;
-  if (!automatic) button.disabled = true;
+  button.disabled = true;
   try {
-    await persistProjectNow({ retries: automatic ? 1 : 3 });
+    await persistProjectNow({ retries: 3 });
     await updatePreview();
-    const bmp = canvasToMonoBmp($('#preview'), project.device.display.threshold);
+    const canvas = document.createElement('canvas');
+    canvas.width = DISPLAY_WIDTH; canvas.height = DISPLAY_HEIGHT;
+    const agenda = { ...project.agenda, holidays: [...project.agenda.holidays.manual, ...spanishHolidays] };
+    await renderPage(canvas, project, activePage(), {
+      runtimeInvert: runtime.inverted,
+      blank: runtime.blank,
+      agenda,
+      telemetry: deviceTelemetry,
+      assetResolver: assetUrl,
+      deferDisplayTransform: true,
+    });
+    const bmp = canvasToMonoBmp(canvas, project.device.display.threshold);
     const accepted = await jsonResponse(await fetch('/api/display', {
       method: 'POST',
       headers: {
         'Content-Type': 'image/bmp',
-        'X-Refresh-Mode': automatic ? 'partial' : project.device.display.refreshMode,
+        'X-Page-Id': project.activePageId,
+        'X-Runtime-Invert': runtime.inverted ? '1' : '0',
+        'X-Runtime-Blank': runtime.blank ? '1' : '0',
       },
       body: bmp,
     }));
     await waitForDisplayJob(accepted.job);
-    if (!automatic) toast(`${physicalDevice ? 'Pantalla actualizada' : 'Pantalla simulada'} · trabajo ${accepted.job}`);
+    toast(`${physicalDevice ? 'Pantalla actualizada' : 'Pantalla simulada'} · trabajo ${accepted.job}`);
     return true;
   } catch (error) {
-    if (!automatic) toast(error.message || 'No se pudo actualizar la pantalla.');
-    else autoRefreshLastResult = 'error de conexión';
+    toast(error.message || 'No se pudo actualizar la pantalla.');
     return false;
   } finally {
     displayJobActive = false;
-    if (!automatic) button.disabled = false;
+    button.disabled = false;
   }
 }
 
@@ -1085,7 +1178,6 @@ function attachEvents() {
   $('#device-form').addEventListener('input', (event) => {
     if (event.target.name === 'safeMargin') $('#margin-output').textContent = `${event.target.value} px`;
     if (event.target.name === 'threshold') $('#threshold-output').textContent = event.target.value;
-    if (event.target.name === 'refreshMinutes') $('#refresh-minutes-output').textContent = Number(event.target.value) ? `${event.target.value} min` : 'Manual';
   });
   $('#button-settings').addEventListener('change', (event) => {
     if (!event.target.name?.endsWith('Action')) return;
@@ -1165,10 +1257,7 @@ async function initializeApp() {
   document.addEventListener('visibilitychange', async () => {
     if (!document.hidden) {
       await refreshStaleWeather();
-      if (refreshMinutes() && autoRefreshDeadline && Date.now() >= autoRefreshDeadline) {
-        await sendDisplay({ automatic: true });
-        scheduleAutoRefresh();
-      }
+      scheduleAutoRefresh();
     }
   });
   window.addEventListener('pagehide', () => {

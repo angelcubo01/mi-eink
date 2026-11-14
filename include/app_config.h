@@ -49,7 +49,7 @@ static constexpr size_t BMP_PIXEL_SIZE = (DISPLAY_WIDTH * DISPLAY_HEIGHT) / 8;
 static constexpr size_t BMP_FILE_SIZE = BMP_HEADER_SIZE + BMP_PIXEL_SIZE;
 // El proyecto Studio se guarda como JSON en LittleFS. Las imágenes cargadas
 // desde móvil se reducen en el navegador antes de llegar aquí.
-static constexpr size_t PROJECT_MAX_SIZE = 1024 * 1024;
+static constexpr size_t PROJECT_MAX_SIZE = 512 * 1024;
 
 // Pines oficiales del TRMNL 7,5\" OG DIY Kit con XIAO ESP32-S3 Plus.
 static constexpr uint8_t EPD_SCK = 7;

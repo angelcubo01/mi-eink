@@ -724,4 +724,94 @@ bool weatherConfigured() {
   return AppConfig::OPENWEATHER_API_KEY[0] != '\0';
 }
 
+bool fetchWeather(double latitude, double longitude, bool fahrenheit, int daysRequested, String &payload,
+                  String &error, bool force) {
+  if (!weatherConfigured()) { error = "Falta la clave OpenWeather"; return false; }
+  if (!connected()) { error = "Sin conexión a Internet"; return false; }
+  daysRequested = constrain(daysRequested, 1, 5);
+  const String cacheKey = String(latitude, 4) + ":" + String(longitude, 4) + ":" +
+                          (fahrenheit ? "f" : "c") + ":" + daysRequested;
+  if (!force && weatherCache.key == cacheKey && !weatherCache.payload.isEmpty() &&
+      millis() - weatherCache.storedAt < 60UL * 60UL * 1000UL) {
+    payload = weatherCache.payload;
+    return true;
+  }
+  const String common = "lat=" + String(latitude, 6) + "&lon=" + String(longitude, 6) +
+                        "&appid=" + urlEncode(AppConfig::OPENWEATHER_API_KEY) +
+                        "&units=" + (fahrenheit ? "imperial" : "metric") + "&lang=es";
+  JsonDocument current;
+  JsonDocument forecast;
+  if (!externalJson("https://api.openweathermap.org/data/2.5/weather?" + common, current, error) ||
+      !externalJson("https://api.openweathermap.org/data/2.5/forecast?" + common, forecast, error)) return false;
+
+  const int32_t offset = forecast["city"]["timezone"] | current["timezone"] | 0;
+  std::vector<DailyWeather> daily;
+  daily.reserve(6);
+  addWeatherEntry(daily, current.as<JsonVariantConst>(), offset, fahrenheit, true);
+  for (JsonVariantConst entry : forecast["list"].as<JsonArrayConst>()) addWeatherEntry(daily, entry, offset, fahrenheit, false);
+  std::sort(daily.begin(), daily.end(), [](const DailyWeather &left, const DailyWeather &right) { return left.date < right.date; });
+
+  JsonDocument response;
+  response["provider"] = "OpenWeather";
+  response["fetchedAt"] = isoTime(current["dt"].as<int64_t>());
+  response["units"]["temperature"] = fahrenheit ? "°F" : "°C";
+  response["units"]["wind"] = fahrenheit ? "mph" : "km/h";
+  response["units"]["precipitation"] = fahrenheit ? "in" : "mm";
+  response["temperature"] = current["main"]["temp"];
+  response["apparentTemperature"] = current["main"]["feels_like"];
+  response["humidity"] = current["main"]["humidity"];
+  response["pressure"] = current["main"]["pressure"];
+  response["precipitation"] = round(precipitation(current.as<JsonVariantConst>()) * 100.0) / 100.0;
+  response["cloudCover"] = current["clouds"]["all"];
+  response["code"] = current["weather"][0]["id"];
+  response["condition"] = current["weather"][0]["description"] | "";
+  response["wind"] = round(windSpeed(current["wind"]["speed"].as<double>(), fahrenheit) * 10.0) / 10.0;
+  const int64_t now = current["dt"].as<int64_t>();
+  response["isDay"] = now >= current["sys"]["sunrise"].as<int64_t>() && now < current["sys"]["sunset"].as<int64_t>();
+  JsonArray dailyJson = response["daily"].to<JsonArray>();
+  for (size_t index = 0; index < daily.size() && static_cast<int>(index) < daysRequested; ++index) {
+    const DailyWeather &day = daily[index];
+    JsonObject item = dailyJson.add<JsonObject>();
+    item["date"] = day.date;
+    item["code"] = day.code;
+    item["condition"] = day.condition;
+    item["min"] = std::isfinite(day.minimum) ? day.minimum : 0;
+    item["max"] = std::isfinite(day.maximum) ? day.maximum : 0;
+    item["precipitation"] = round(day.precipitation * 100.0) / 100.0;
+    item["precipitationProbability"] = day.precipitationProbability;
+  }
+  response["cached"] = false;
+  serializeJson(response, payload);
+  weatherCache.key = cacheKey;
+  weatherCache.payload = payload;
+  weatherCache.storedAt = millis();
+  return true;
+}
+
+bool fetchHolidays(int year, const String &region, String &payload, String &error) {
+  if (!connected()) { error = "Sin conexión a Internet"; return false; }
+  JsonDocument upstream;
+  if (!externalJson("https://date.nager.at/api/v3/PublicHolidays/" + String(year) + "/ES", upstream, error)) return false;
+  JsonDocument response;
+  response["year"] = year;
+  response["region"] = region;
+  response["fetchedAt"] = isoTime(time(nullptr));
+  JsonArray holidays = response["holidays"].to<JsonArray>();
+  for (JsonObjectConst holiday : upstream.as<JsonArrayConst>()) {
+    const bool global = holiday["global"] | false;
+    bool regional = false;
+    for (JsonVariantConst subdivision : holiday["counties"].as<JsonArrayConst>()) {
+      if (String(subdivision.as<const char *>()) == region) { regional = true; break; }
+    }
+    if (!global && !regional) continue;
+    JsonObject item = holidays.add<JsonObject>();
+    item["id"] = "es-" + String(holiday["date"] | "") + "-" + String(holidays.size());
+    item["date"] = holiday["date"] | "";
+    item["title"] = holiday["localName"] | holiday["name"] | "Festivo";
+    item["scope"] = global ? "Nacional" : region;
+  }
+  serializeJson(response, payload);
+  return true;
+}
+
 }  // namespace Connectivity

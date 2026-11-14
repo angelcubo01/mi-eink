@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const DISPLAY_WIDTH = 800;
 export const DISPLAY_HEIGHT = 480;
 export const GRID_COLUMNS = 20;
@@ -14,6 +14,29 @@ export const BUTTON_ACTIONS = Object.freeze([
   'blank',
   'none',
 ]);
+
+function nextBoundary(now, unit) {
+  const value = new Date(now);
+  value.setSeconds(0, 0);
+  if (unit === 'minute') value.setMinutes(value.getMinutes() + 1);
+  if (unit === 'hour') { value.setMinutes(0); value.setHours(value.getHours() + 1); }
+  if (unit === 'day') value.setHours(24, 0, 0, 0);
+  return value;
+}
+
+export function dynamicScheduleForPage(page, now = new Date()) {
+  const candidates = [];
+  for (const widget of page?.widgets || []) {
+    if (widget.type === 'clock') {
+      if (widget.config?.showTime !== false) candidates.push({ at: nextBoundary(now, 'minute'), reason: 'hora' });
+      else if (widget.config?.showDate !== false || widget.config?.showWeekday !== false) candidates.push({ at: nextBoundary(now, 'day'), reason: 'fecha' });
+    } else if (widget.type === 'weather') candidates.push({ at: nextBoundary(now, 'hour'), reason: 'tiempo' });
+    else if (widget.type === 'calendar' || widget.type === 'events') candidates.push({ at: nextBoundary(now, 'day'), reason: widget.type === 'calendar' ? 'calendario' : 'eventos' });
+  }
+  if (!candidates.length) return null;
+  const earliest = Math.min(...candidates.map((candidate) => candidate.at.getTime()));
+  return { at: new Date(earliest), reasons: [...new Set(candidates.filter((candidate) => candidate.at.getTime() === earliest).map((candidate) => candidate.reason))] };
+}
 
 const WIDGET_DEFAULTS = Object.freeze({
   text: { w: 2, h: 2, config: { text: 'Escribe algo', fontSize: 'auto', align: 'center', verticalAlign: 'middle', weight: 700, padding: 12, lineHeight: 1.08, border: false, invert: false } },
@@ -36,7 +59,7 @@ export function deepClone(value) {
 }
 
 export function createPage(name = 'Página 1') {
-  return { id: id('page'), name, background: 'white', widgets: [] };
+  return { id: id('page'), name, background: 'white', frameId: null, widgets: [] };
 }
 
 export function createDefaultProject() {
@@ -52,7 +75,7 @@ export function createDefaultProject() {
       holidays: { manual: [], spain: { enabled: false, region: '', cached: null } },
     },
     device: {
-      display: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT, rotation: 0, invert: false, threshold: 160, safeMargin: 0, refreshMode: 'full', refreshMinutes: 0 },
+      display: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT, rotation: 0, invert: false, threshold: 160, safeMargin: 0, refreshMode: 'full' },
       network: { mode: 'ap_sta', apSsid: 'MiEInk', homeSsid: '' },
       buttons: {
         key1: { action: 'previous_page', pageId: null },
@@ -258,11 +281,27 @@ export function sanitizeProject(input) {
       id: String(page.id || id('page')),
       name: String(page.name || `Página ${pageIndex + 1}`).slice(0, 50),
       background: page.background === 'black' ? 'black' : 'white',
+      frameId: /^[a-f0-9]{64}$/i.test(String(page.frameId || '')) ? String(page.frameId).toLowerCase() : null,
       widgets: collisionFree,
     };
   });
   project.activePageId = project.pages.some((page) => page.id === project.activePageId) ? project.activePageId : project.pages[0].id;
-  project.assets = project.assets && typeof project.assets === 'object' ? project.assets : {};
+  const inputAssets = project.assets && typeof project.assets === 'object' ? project.assets : {};
+  project.assets = Object.fromEntries(Object.entries(inputAssets).flatMap(([assetId, asset]) => {
+    const idValue = String(asset?.id || assetId).toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(idValue)) return [];
+    return [[idValue, {
+      id: idValue,
+      name: String(asset?.name || 'imagen').slice(0, 120),
+      mime: 'image/bmp',
+      format: 'mono1',
+      width: Math.max(1, Math.min(DISPLAY_WIDTH, Number(asset?.width || DISPLAY_WIDTH))),
+      height: Math.max(1, Math.min(DISPLAY_HEIGHT, Number(asset?.height || DISPLAY_HEIGHT))),
+      size: Math.max(0, Number(asset?.size || 0)),
+      crc32: String(asset?.crc32 || '').toLowerCase(),
+      url: `/api/assets/${idValue}`,
+    }]];
+  }));
   const priorAgenda = project.agenda && typeof project.agenda === 'object' ? project.agenda : {};
   const priorHolidays = priorAgenda.holidays && typeof priorAgenda.holidays === 'object' ? priorAgenda.holidays : {};
   project.agenda = {
@@ -291,12 +330,12 @@ export function sanitizeProject(input) {
   project.device.display = {
     ...fallback.device.display,
     ...display,
-    refreshMode: display.refreshMode || display.refresh || fallback.device.display.refreshMode,
-    refreshMinutes: Math.max(0, Math.min(1440, Number(display.refreshMinutes || 0))),
+    refreshMode: 'full',
     width: DISPLAY_WIDTH,
     height: DISPLAY_HEIGHT,
   };
   delete project.device.display.refresh;
+  delete project.device.display.refreshMinutes;
   project.device.network = cleanNetwork(project.device.network);
   project.device.buttons = { ...fallback.device.buttons, ...(project.device.buttons || {}) };
   for (const key of ['key1', 'key2', 'key3']) {

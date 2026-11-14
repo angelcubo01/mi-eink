@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -45,13 +46,21 @@ test('persiste proyectos y recursos sin devolver contraseñas', async (t) => {
   const project = await (await fetch(`${base}/api/project`)).json();
   project.name = 'Panel probado';
   project.device.network.apPassword = 'no-debe-guardarse';
+  const frame = validBmp();
+  const frameId = createHash('sha256').update(frame).digest('hex');
+  assert.equal((await fetch(`${base}/api/frames/${frameId}`, { method: 'PUT', headers: { 'Content-Type': 'image/bmp' }, body: frame })).status, 201);
+  project.pages[0].frameId = frameId;
   const saved = await (await fetch(`${base}/api/project`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(project) })).json();
   assert.equal(saved.name, 'Panel probado');
   assert.equal(JSON.stringify(saved).includes('no-debe-guardarse'), false);
 
-  const asset = await (await fetch(`${base}/api/assets`, { method: 'POST', headers: { 'Content-Type': 'image/png', 'X-File-Name': 'prueba.png' }, body: Buffer.from([137, 80, 78, 71]) })).json();
-  assert.match(asset.id, /^[a-f0-9-]{36}$/);
+  const asset = await (await fetch(`${base}/api/assets/${frameId}`, { method: 'POST', headers: { 'Content-Type': 'image/bmp', 'X-File-Name': 'prueba.bmp' }, body: frame })).json();
+  assert.match(asset.id, /^[a-f0-9]{64}$/);
+  assert.equal(asset.format, 'mono1');
   assert.equal((await fetch(`${base}${asset.url}`)).status, 200);
+  const storage = await (await fetch(`${base}/api/device/storage`)).json();
+  assert.equal(storage.reserved, 256 * 1024);
+  assert.ok(storage.assetsBytes >= BMP_SIZE);
 
   const network = await (await fetch(`${base}/api/device/network`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ homeSsid: 'Casa', homePassword: 'secreto2' }) })).json();
   assert.equal(network.secretsAccepted, true);

@@ -122,9 +122,7 @@
             <label>Orientación<select name="rotation"><option value="0">0°</option><option value="180">180°</option></select></label>
             <label>Margen seguro <output id="margin-output">0 px</output><input name="safeMargin" type="range" min="0" max="64" step="4" /></label>
             <label>Umbral blanco/negro <output id="threshold-output">160</output><input name="threshold" type="range" min="64" max="224" /></label>
-            <label>Estrategia<select name="refreshMode"><option value="full">Refresco completo</option><option value="automatic">Automático</option></select></label>
-            <label>Refrescar pantalla cada <output id="refresh-minutes-output">Manual</output><input name="refreshMinutes" type="number" min="0" max="1440" step="1" value="0" /></label>
-            <p class="privacy-note">El tiempo se consulta como máximo una vez por hora, independientemente de este ajuste.</p>
+            <p class="privacy-note">Refresco inteligente completo: la hora cambia cada minuto, el tiempo cada hora y fecha, calendario y eventos a medianoche.</p>
             <label class="check-row"><input name="invert" type="checkbox" /> Invertir pantalla</label>
           </section>
           <section>

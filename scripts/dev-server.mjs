@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /** Servidor de desarrollo y API simulada de MiEInk Studio. */
 
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createDefaultProject, sanitizeProject } from '../web/model.js';
+import { createDefaultProject, dynamicScheduleForPage, sanitizeProject } from '../web/model.js';
 
 export const DISPLAY_WIDTH = 800;
 export const DISPLAY_HEIGHT = 480;
 export const BMP_SIZE = 48062;
+const STORAGE_TOTAL = 1536 * 1024;
+const STORAGE_RESERVED = 256 * 1024;
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const WEB_ROOT = resolve(ROOT, 'web');
@@ -21,7 +23,7 @@ const QR_LIBRARY = resolve(ROOT, 'node_modules', 'qrcode-generator', 'qrcode.js'
 const DEFAULT_SECRETS_FILE = resolve(ROOT, 'include', 'secrets.h');
 const MIME_TYPES = Object.freeze({
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
 });
 
 function json(response, statusCode, payload) {
@@ -59,6 +61,30 @@ export function validateMonoBmp(buffer) {
   if (readU16(buffer, 26) !== 1 || readU16(buffer, 28) !== 1) return false;
   if (readU32(buffer, 30) !== 0 || readU32(buffer, 34) !== 48000) return false;
   return buffer[54] === 0 && buffer[55] === 0 && buffer[56] === 0 && buffer[58] === 255 && buffer[59] === 255 && buffer[60] === 255;
+}
+
+export function monoBmpInfo(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 66 || buffer[0] !== 0x42 || buffer[1] !== 0x4d) return null;
+  const width = readU32(buffer, 18);
+  const height = readU32(buffer, 22);
+  const stride = Math.ceil(width / 32) * 4;
+  const pixelBytes = stride * height;
+  if (!width || !height || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT) return null;
+  if (readU32(buffer, 2) !== 62 + pixelBytes || buffer.length !== 62 + pixelBytes || readU32(buffer, 10) !== 62) return null;
+  if (readU16(buffer, 26) !== 1 || readU16(buffer, 28) !== 1 || readU32(buffer, 30) !== 0 || readU32(buffer, 34) !== pixelBytes) return null;
+  if (buffer[54] !== 0 || buffer[55] !== 0 || buffer[56] !== 0 || buffer[58] !== 255 || buffer[59] !== 255 || buffer[60] !== 255) return null;
+  return { width, height, stride, pixelBytes };
+}
+
+function sha256(buffer) { return createHash('sha256').update(buffer).digest('hex'); }
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const value of buffer) {
+    crc ^= value;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
 }
 
 function collectBody(request, limit) {
@@ -111,7 +137,11 @@ function createSimulation() {
         source: 'simulation', updatedAt: new Date().toISOString(), connected: true, error: null,
         power: { percentage: battery, charging: true, voltage: 4.08 },
         network: { state: 'ap', ssid: project.device.network.apSsid || 'MiEInk', ip: 'localhost', rssi: -48 - (minutes % 7) },
-        display: { state: state.state, lastRefreshAt, refreshCount, refreshMinutes: project.device.display.refreshMinutes || 0 },
+        display: (() => {
+          const page = project.pages.find((entry) => entry.id === project.activePageId) || project.pages[0];
+          const schedule = dynamicScheduleForPage(page);
+          return { state: state.state, lastRefreshAt, refreshCount, refreshMode: 'full', activePageId: page?.id || null, nextRefreshAt: schedule?.at.toISOString() || null, nextRefreshReason: schedule?.reasons.join(', ') || null };
+        })(),
         system: { uptimeSeconds, uptimeLabel: `${Math.floor(uptimeSeconds / 3600)} h ${Math.floor((uptimeSeconds % 3600) / 60)} min`, firmware: 'MiEInk Studio sim', temperatureC: 27 + (minutes % 3) },
       };
     },
@@ -120,7 +150,32 @@ function createSimulation() {
 
 function projectStore(dataRoot) {
   const projectFile = resolve(dataRoot, 'project.json');
+  const projectTemp = resolve(dataRoot, 'project.upload');
   const assetsRoot = resolve(dataRoot, 'assets');
+  const framesRoot = resolve(dataRoot, 'frames');
+  async function directoryBytes(root) {
+    try {
+      let total = 0;
+      for (const entry of await readdir(root)) total += (await stat(resolve(root, entry))).size;
+      return total;
+    } catch { return 0; }
+  }
+  async function storage() {
+    const projectBytes = await stat(projectFile).then((value) => value.size).catch(() => 0);
+    const assetsBytes = await directoryBytes(assetsRoot);
+    const framesBytes = await directoryBytes(framesRoot);
+    const used = projectBytes + assetsBytes + framesBytes;
+    return { total: STORAGE_TOTAL, used, free: Math.max(0, STORAGE_TOTAL - used), reserved: STORAGE_RESERVED, available: Math.max(0, STORAGE_TOTAL - used - STORAGE_RESERVED), projectBytes, assetsBytes, framesBytes };
+  }
+  async function ensureSpace(bytes, replacing = 0) {
+    const usage = await storage();
+    const available = usage.available + replacing;
+    if (bytes > available) {
+      const error = new Error(`No hay espacio: se necesitan ${bytes} bytes y hay ${available} disponibles.`);
+      error.statusCode = 507;
+      throw error;
+    }
+  }
   return {
     async read() {
       try { return sanitizeProject(JSON.parse(await readFile(projectFile, 'utf8'))); }
@@ -129,22 +184,51 @@ function projectStore(dataRoot) {
     async write(project) {
       await mkdir(dataRoot, { recursive: true });
       const clean = sanitizeProject(project);
-      await writeFile(projectFile, `${JSON.stringify(clean, null, 2)}\n`, 'utf8');
+      for (const page of clean.pages) {
+        if (!page.frameId || !await stat(resolve(framesRoot, `${page.frameId}.bmp`)).then(() => true).catch(() => false)) throw new Error(`Falta la base persistente de la página ${page.name}.`);
+      }
+      for (const assetId of Object.keys(clean.assets)) {
+        if (!await stat(resolve(assetsRoot, `${assetId}.bmp`)).then(() => true).catch(() => false)) throw new Error(`Falta el recurso ${assetId}.`);
+      }
+      const content = Buffer.from(`${JSON.stringify(clean, null, 2)}\n`, 'utf8');
+      await ensureSpace(content.length);
+      await writeFile(projectTemp, content);
+      await rename(projectTemp, projectFile);
+      const referencedAssets = new Set(Object.keys(clean.assets));
+      const referencedFrames = new Set(clean.pages.map((page) => page.frameId).filter(Boolean));
+      for (const [root, referenced] of [[assetsRoot, referencedAssets], [framesRoot, referencedFrames]]) {
+        for (const entry of await readdir(root).catch(() => [])) {
+          const id = entry.replace(/\.bmp$/, '');
+          if (!referenced.has(id)) await unlink(resolve(root, entry)).catch(() => {});
+        }
+      }
       return clean;
     },
-    async saveAsset(buffer, mime, name) {
-      const extension = mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
-      const assetId = randomUUID();
+    async saveAsset(assetId, buffer, name) {
+      const info = monoBmpInfo(buffer);
+      if (!info || sha256(buffer) !== assetId) throw new Error('El recurso monocromo no es válido o su SHA-256 no coincide.');
       await mkdir(assetsRoot, { recursive: true });
-      await writeFile(resolve(assetsRoot, `${assetId}${extension}`), buffer);
-      return { id: assetId, name: String(name || 'imagen').slice(0, 120), mime, size: buffer.length, url: `/api/assets/${assetId}` };
+      const path = resolve(assetsRoot, `${assetId}.bmp`);
+      const priorSize = await stat(path).then((value) => value.size).catch(() => 0);
+      if (priorSize) return { id: assetId, name: String(name || 'imagen').slice(0, 120), mime: 'image/bmp', format: 'mono1', size: buffer.length, width: info.width, height: info.height, crc32: crc32(buffer), url: `/api/assets/${assetId}` };
+      await ensureSpace(buffer.length);
+      await writeFile(path, buffer);
+      return { id: assetId, name: String(name || 'imagen').slice(0, 120), mime: 'image/bmp', format: 'mono1', size: buffer.length, width: info.width, height: info.height, crc32: crc32(buffer), url: `/api/assets/${assetId}` };
+    },
+    async saveFrame(frameId, buffer) {
+      if (!validateMonoBmp(buffer) || sha256(buffer) !== frameId) throw new Error('La base de página no es válida o su SHA-256 no coincide.');
+      await mkdir(framesRoot, { recursive: true });
+      const path = resolve(framesRoot, `${frameId}.bmp`);
+      const priorSize = await stat(path).then((value) => value.size).catch(() => 0);
+      if (priorSize) return { id: frameId, size: priorSize };
+      await ensureSpace(buffer.length);
+      await writeFile(path, buffer);
+      return { id: frameId, size: buffer.length };
     },
     async findAsset(assetId) {
-      if (!/^[a-f0-9-]{36}$/i.test(assetId)) return null;
-      try {
-        const file = (await readdir(assetsRoot)).find((entry) => entry.startsWith(`${assetId}.`));
-        return file ? resolve(assetsRoot, file) : null;
-      } catch { return null; }
+      if (!/^[a-f0-9]{64}$/i.test(assetId)) return null;
+      const path = resolve(assetsRoot, `${assetId}.bmp`);
+      return stat(path).then(() => path).catch(() => null);
     },
     async deleteAsset(assetId) {
       const path = await this.findAsset(assetId);
@@ -152,6 +236,7 @@ function projectStore(dataRoot) {
       await unlink(path);
       return true;
     },
+    storage,
   };
 }
 
@@ -172,8 +257,12 @@ async function serveStatic(pathname, response) {
 }
 
 function assetIdFrom(pathname) {
-  const match = pathname.match(/^\/api\/assets\/([a-f0-9-]{36})$/i);
+  const match = pathname.match(/^\/api\/assets\/([a-f0-9]{64})$/i);
   return match?.[1] || null;
+}
+
+function frameIdFrom(pathname) {
+  return pathname.match(/^\/api\/frames\/([a-f0-9]{64})$/i)?.[1] || null;
 }
 
 function safeDevice(project) {
@@ -311,20 +400,30 @@ export function createDevServer(options = {}) {
       }
       if (url.pathname === '/api/project' && request.method === 'GET') return json(response, 200, await store.read());
       if (url.pathname === '/api/project' && request.method === 'PUT') return json(response, 200, await store.write(await readJsonBody(request)));
-      if (url.pathname === '/api/assets' && request.method === 'POST') {
-        const mime = String(request.headers['content-type'] || '').split(';')[0];
-        if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime)) return json(response, 415, { message: 'Solo se admiten PNG, JPEG y WebP.' });
-        const body = await collectBody(request, 4 * 1024 * 1024 + 1);
+      const assetId = assetIdFrom(url.pathname);
+      if (assetId && request.method === 'POST') {
+        if (!request.headers['content-type']?.startsWith('image/bmp')) return json(response, 415, { message: 'El recurso debe ser un BMP monocromo de 1 bit.' });
+        const body = await collectBody(request, BMP_SIZE + 1);
         const name = decodeURIComponent(String(request.headers['x-file-name'] || 'imagen'));
-        const asset = await store.saveAsset(body, mime, name);
+        const asset = await store.saveAsset(assetId, body, name);
         return json(response, 201, asset);
       }
-      const assetId = assetIdFrom(url.pathname);
       if (assetId && request.method === 'GET') {
         const path = await store.findAsset(assetId);
         return path ? serveFile(path, response, 'public, max-age=31536000, immutable') : json(response, 404, { message: 'Recurso no encontrado.' });
       }
-      if (assetId && request.method === 'DELETE') return json(response, await store.deleteAsset(assetId) ? 200 : 404, { deleted: true });
+      if (assetId && request.method === 'DELETE') {
+        const project = await store.read();
+        if (project.pages.some((page) => page.widgets.some((widget) => widget.type === 'image' && widget.config.assetId === assetId))) return json(response, 409, { message: 'El recurso sigue en uso.' });
+        return json(response, await store.deleteAsset(assetId) ? 200 : 404, { deleted: true });
+      }
+      const frameId = frameIdFrom(url.pathname);
+      if (frameId && request.method === 'PUT') {
+        if (!request.headers['content-type']?.startsWith('image/bmp')) return json(response, 415, { message: 'La base debe ser image/bmp.' });
+        const frame = await collectBody(request, BMP_SIZE + 1);
+        return json(response, 201, await store.saveFrame(frameId, frame));
+      }
+      if (url.pathname === '/api/device/storage' && request.method === 'GET') return json(response, 200, await store.storage());
       if (url.pathname === '/api/device/status' && request.method === 'GET') return json(response, 200, simulation.telemetry(await store.read()));
       if (url.pathname === '/api/device/network' && request.method === 'GET') {
         const project = await store.read();

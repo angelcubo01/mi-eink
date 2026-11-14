@@ -16,7 +16,7 @@ No es compatible con la variante XIAO ESP32-C3 ni con los modelos de tres o seis
 
 ## Desarrollo de la interfaz sin hardware
 
-La simulación incluye el editor MiEInk Studio: páginas, grid 20 × 12, widgets de texto, reloj, tiempo, calendario, eventos, estado del dispositivo, imagen y QR. Calendario y Eventos comparten una agenda global con festivos manuales y nacionales/autonómicos de España. También incluye configuración de botones, refresco automático global en minutos y vista previa monocroma. Las imágenes se convierten a blanco y negro con dithering para conservar detalle. Los proyectos e imágenes se guardan en `.data/`, que Git ignora.
+La simulación incluye el editor MiEInk Studio: páginas, grid 20 × 12, widgets de texto, reloj, tiempo, calendario, eventos, estado del dispositivo, imagen y QR. Calendario y Eventos comparten una agenda global con festivos manuales y nacionales/autonómicos de España. También incluye botones configurables, planificación inteligente y vista previa monocroma. Las imágenes se convierten a un BMP de un bit con dithering y se guardan fuera del JSON; los proyectos, imágenes y bases de página viven en `.data/`, que Git ignora.
 
 ```powershell
 npm test
@@ -93,10 +93,7 @@ Después conecta el móvil u ordenador al SSID definido en `MI_EINK_WIFI_SSID` y
 
 ## Uso y diagnóstico del panel
 
-- **KEY1**: refresco completo en blanco.
-- **KEY2**: refresco completo en negro.
-
-Estas son todavía las funciones del firmware de diagnóstico. Las acciones configurables de KEY1, KEY2 y KEY3 en MiEInk Studio son una simulación para la siguiente fase y aún no cambian el controlador.
+- **KEY1, KEY2 y KEY3**: ejecutan la acción configurada en MiEInk Studio: página anterior/siguiente/específica, refrescar, invertir, dejar en blanco o ninguna.
 
 Para inspeccionar el diagnóstico USB, abre el [XIAO ESP32 Series Web Flasher](https://www.seeedstudio.com/xiao-series-page/playground/esp-flasher/) en Chrome o Edge, pulsa **Connect**, selecciona el XIAO y abre el monitor a `115200` baudios. El firmware informa de los pines, botones, estado `BUSY` y de cada fase de actualización. Un mensaje `[EPD][ERROR] BUSY no cambió` apunta a alimentación, cable FPC, puente o comunicación con el panel.
 
@@ -107,7 +104,9 @@ Antes de diagnosticar un panel sin respuesta, comprueba que el cable flexible es
 - `GET /api/status`: estado actual, resolución y resultado.
 - `POST /api/display`: BMP sin compresión de 800 × 480, monocromo de un bit y exactamente 48.062 bytes.
 - `GET /api/project` y `PUT /api/project`: proyecto completo persistido en el controlador, sin secretos.
-- `POST /api/assets` y `GET/DELETE /api/assets/:id`: imágenes del proyecto.
+- `POST/GET/DELETE /api/assets/:id`: imágenes BMP monocromas identificadas por SHA-256.
+- `PUT /api/frames/:hash`: base estática monocroma e inmutable de una página.
+- `GET /api/device/storage`: capacidad, uso, reserva y desglose de LittleFS.
 - `GET /api/device/network`: estado seguro de AP + red doméstica, sin credenciales.
 - `GET /api/device/networks`: escaneo de redes cercanas, señal y tipo de seguridad.
 - `POST /api/device/network`: guarda la red doméstica en NVS y reconecta sin detener el AP.
@@ -115,7 +114,7 @@ Antes de diagnosticar un panel sin respuesta, comprueba que el cable flexible es
 - `GET /api/integrations/geocode` y `GET /api/integrations/weather`: OpenWeather desde el controlador; la previsión se cachea durante una hora.
 - `GET /api/integrations/holidays`: festivos nacionales y autonómicos de España desde Nager.Date v3, con caché persistente en LittleFS y uso sin conexión de la última copia válida.
 
-El proyecto se guarda primero en LittleFS y el navegador mantiene únicamente una copia de respaldo. La reconexión Wi-Fi no comienza hasta que el guardado ha sido confirmado. Los widgets de reloj/fecha de la página activa pueden actualizarse de forma autónoma mediante NTP con el intervalo configurado; el panel usa refresco diferencial y fuerza uno completo cada 12 ciclos para limitar el ghosting.
+El proyecto se confirma de forma atómica después de subir sus recursos y bases de página; solo entonces se eliminan archivos huérfanos. El controlador reserva 256 KB para proyecto, cachés y temporales. La página activa se recompone siempre por completo: reloj con hora al comenzar cada minuto, tiempo al comenzar cada hora y fecha, calendario, eventos y festivos a medianoche. No se usa refresco parcial.
 
 Las respuestas son `202` al aceptar una actualización, `400` ante una imagen inválida, `409` si existe otra actualización y `500` si falla la memoria o la pantalla. La simulación local conserva el mismo contrato.
 

@@ -10,6 +10,7 @@ import {
   MARGINS,
   calculateLayout,
   canvasToMonoBmp,
+  canvasToOneBitBmp,
   wrapText,
   viewVisibility,
 } from '../web/app.js';
@@ -115,6 +116,17 @@ test('genera un BMP monocromo estándar de 48062 bytes', () => {
   assert.deepEqual(Array.from(bmp.slice(54, 62)), [0, 0, 0, 0, 255, 255, 255, 0]);
 });
 
+test('empaqueta recursos pequeños a un bit con filas alineadas a 32 bits', () => {
+  const canvas = createCanvas();
+  canvas.width = 13;
+  canvas.height = 7;
+  const bmp = canvasToOneBitBmp(canvas);
+  assert.equal(bmp.byteLength, 62 + 4 * 7);
+  assert.equal(u32(bmp, 18), 13);
+  assert.equal(u32(bmp, 22), 7);
+  assert.equal(u32(bmp, 34), 28);
+});
+
 test('escribe las filas de abajo arriba y los bits de izquierda a derecha', () => {
   const bmp = canvasToMonoBmp(createCanvas([[0, 0]]));
   const rowBytes = DISPLAY_WIDTH / 8;
@@ -130,14 +142,15 @@ test('el firmware interpreta los bits blancos del BMP sin invertir la pantalla f
   assert.doesNotMatch(firmware, /loadBMP\(bmp,\s*0,\s*0,\s*BBEP_BLACK,\s*BBEP_WHITE\)/);
 });
 
-test('los refrescos automáticos solicitan actualización parcial al firmware', async () => {
+test('los refrescos automáticos son completos y el navegador no controla el temporizador físico', async () => {
   const [app, firmware] = await Promise.all([
     readFile(new URL('../web/app.js', import.meta.url), 'utf8'),
     readFile(new URL('../src/main.cpp', import.meta.url), 'utf8'),
   ]);
-  assert.match(app, /'X-Refresh-Mode': automatic \? 'partial'/);
-  assert.match(firmware, /REFRESH_PARTIAL/);
-  assert.match(firmware, /DISPLAY_FILE\[\] = "\/display\.bmp"/);
+  assert.doesNotMatch(app, /X-Refresh-Mode|sendDisplay\(\{\s*automatic/);
+  assert.doesNotMatch(firmware, /PLANE_1|REFRESH_PARTIAL/);
+  assert.match(firmware, /writePlane\(PLANE_DUPLICATE/);
+  assert.match(firmware, /refresh\(REFRESH_FULL/);
 });
 
 test('las vistas de diseño y tinta son mutuamente excluyentes', async () => {

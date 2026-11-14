@@ -299,7 +299,7 @@ function drawDevice(ctx, rect, config, telemetry) {
   const metrics = [
     config.showBattery !== false ? { icon: 'battery', value: `${telemetry.power?.percentage ?? '—'}%`, label: telemetry.power?.charging ? 'Cargando' : 'Batería', level: telemetry.power?.percentage } : null,
     config.showNetwork !== false ? { icon: 'wifi', value: config.showNetworkName || telemetry.network?.rssi == null ? telemetry.network?.ssid || 'AP' : `${telemetry.network.rssi} dBm`, label: 'Wi‑Fi' } : null,
-    config.showRefresh !== false ? { icon: 'refresh', value: `${telemetry.display?.refreshCount ?? 0}`, label: telemetry.display?.refreshMinutes ? `${telemetry.display.refreshMinutes} min` : 'Manual' } : null,
+    config.showRefresh !== false ? { icon: 'refresh', value: `${telemetry.display?.refreshCount ?? 0}`, label: telemetry.display?.nextRefreshReason || 'Inteligente' } : null,
     config.showUptime ? { icon: 'uptime', value: telemetry.system?.uptimeLabel || '—', label: 'Activa' } : null,
     config.showFirmware ? { icon: 'chip', value: telemetry.system?.firmware || '—', label: 'Firmware' } : null,
     config.showTemperature && telemetry.system?.temperatureC != null ? { icon: 'temperature', value: `${Math.round(telemetry.system.temperatureC)}°`, label: 'Temperatura' } : null,
@@ -470,6 +470,15 @@ export async function renderPage(canvas, project, page, options = {}) {
     ctx.clip();
     const colors = frame(ctx, rect, widget.config || {});
     ctx.fillStyle = colors.foreground;
+    // El reloj se vuelve a componer siempre en el controlador porque puede
+    // cambiar cada minuto. Conservamos el último contenido válido del resto
+    // de widgets dinámicos en el frame base: si la caché o el JSON no se
+    // pueden leer durante un refresco, la pantalla mantiene información útil
+    // en vez de dejar un rectángulo vacío.
+    if (options.staticOnly && widget.type === 'clock') {
+      ctx.restore();
+      continue;
+    }
     if (widget.type === 'text') drawFittedText(ctx, widget.config.text, rect, widget.config);
     if (widget.type === 'clock') drawClock(ctx, rect, widget.config, options.now || new Date());
     if (widget.type === 'weather') drawWeather(ctx, rect, widget.config);
@@ -482,7 +491,7 @@ export async function renderPage(canvas, project, page, options = {}) {
   }
   ctx.restore();
   monochrome(ctx, Number(project.device.display.threshold || 160), false);
-  if (project.device.display.invert || options.runtimeInvert) {
+  if (!options.deferDisplayTransform && (project.device.display.invert || options.runtimeInvert)) {
     const image = ctx.getImageData(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     for (let index = 0; index < image.data.length; index += 4) image.data[index] = image.data[index + 1] = image.data[index + 2] = 255 - image.data[index];
     ctx.putImageData(image, 0, 0);
@@ -491,7 +500,7 @@ export async function renderPage(canvas, project, page, options = {}) {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
   }
-  if (Number(project.device.display.rotation) === 180) {
+  if (!options.deferDisplayTransform && Number(project.device.display.rotation) === 180) {
     const copy = ctx.getImageData(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     const source = new Uint32Array(copy.data.buffer);
     const rotated = new ImageData(DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -522,6 +531,33 @@ export function canvasToMonoBmp(canvas, threshold = 160) {
     const sourceY = DISPLAY_HEIGHT - 1 - outputY;
     for (let x = 0; x < DISPLAY_WIDTH; x += 1) {
       const source = (sourceY * DISPLAY_WIDTH + x) * 4;
+      const luminance = pixels[source] * 0.299 + pixels[source + 1] * 0.587 + pixels[source + 2] * 0.114;
+      if (luminance >= threshold) bytes[62 + outputY * rowBytes + Math.floor(x / 8)] |= 1 << (7 - (x % 8));
+    }
+  }
+  return bytes;
+}
+
+export function canvasToOneBitBmp(canvas, threshold = 160) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const rowBytes = Math.ceil(width / 32) * 4;
+  const pixelBytes = rowBytes * height;
+  const size = 62 + pixelBytes;
+  const buffer = new ArrayBuffer(size);
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  bytes[0] = 0x42; bytes[1] = 0x4d;
+  writeU32(view, 2, size); writeU32(view, 10, 62); writeU32(view, 14, 40);
+  writeU32(view, 18, width); writeU32(view, 22, height);
+  writeU16(view, 26, 1); writeU16(view, 28, 1); writeU32(view, 34, pixelBytes);
+  writeU32(view, 38, 2835); writeU32(view, 42, 2835); writeU32(view, 46, 2); writeU32(view, 50, 2);
+  bytes.set([0, 0, 0, 0, 255, 255, 255, 0], 54);
+  const pixels = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+  for (let outputY = 0; outputY < height; outputY += 1) {
+    const sourceY = height - 1 - outputY;
+    for (let x = 0; x < width; x += 1) {
+      const source = (sourceY * width + x) * 4;
       const luminance = pixels[source] * 0.299 + pixels[source + 1] * 0.587 + pixels[source + 2] * 0.114;
       if (luminance >= threshold) bytes[62 + outputY * rowBytes + Math.floor(x / 8)] |= 1 << (7 - (x % 8));
     }
